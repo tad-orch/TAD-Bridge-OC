@@ -1,9 +1,4 @@
-const fs = require('fs/promises');
-const path = require('path');
-const { randomUUID } = require('crypto');
-
-const REVIT_BRIDGE_ROOT = 'D:\\TAD\\revit-bridge';
-const INBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'inbox');
+const { enqueueAddinCommand } = require('../addinQueue');
 
 function validatePayload(payload) {
   if (!payload || typeof payload !== 'object') {
@@ -48,31 +43,11 @@ async function createWallAction(payload) {
     };
   }
 
-  const jobId = `job-${randomUUID()}`;
-  const createdAt = new Date().toISOString();
-
-  const command = {
-    jobId,
-    tool: 'revit_create_wall',
-    createdAt,
-    status: 'queued',
-    payload
-  };
-
-  await fs.mkdir(INBOX_DIR, { recursive: true });
-
-  const filePath = path.join(INBOX_DIR, `${jobId}.json`);
-  await fs.writeFile(filePath, JSON.stringify(command, null, 2), 'utf8');
+  const queued = await enqueueAddinCommand('revit_create_wall', payload);
 
   return {
-    ok: true,
-    action: 'create_wall',
-    queued: true,
-    jobId,
-    commandFile: filePath,
-    source: 'bridge-queue',
-    received: payload,
-    time: createdAt
+    ...queued,
+    action: 'create_wall'
   };
 }
 

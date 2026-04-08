@@ -1,9 +1,16 @@
-const fs = require('fs/promises');
-const path = require('path');
-const { randomUUID } = require('crypto');
+const { enqueueAddinCommand, extractToolPayload } = require('../addinQueue');
 
-const REVIT_BRIDGE_ROOT = 'D:\\TAD\\revit-bridge';
-const INBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'inbox');
+const SUPPORTED_EXPORT_SCOPES = new Set(['selected_views', 'model']);
+
+function normalizePayload(body) {
+  const incoming = extractToolPayload(body);
+
+  return {
+    viewNames: Array.isArray(incoming.viewNames) ? incoming.viewNames : [],
+    outputPath: incoming.outputPath,
+    exportScope: incoming.exportScope ?? 'selected_views'
+  };
+}
 
 function validatePayload(payload) {
   if (!payload || typeof payload !== 'object') {
@@ -13,13 +20,19 @@ function validatePayload(payload) {
   const { viewNames, outputPath, exportScope } = payload;
 
   if (!viewNames || !Array.isArray(viewNames) || viewNames.length === 0) return 'viewNames is required and must be a non-empty array.';
+  if (!viewNames.every((name) => typeof name === 'string' && name.trim().length > 0)) {
+    return 'viewNames must contain only non-empty strings.';
+  }
   if (!outputPath || typeof outputPath !== 'string') return 'outputPath is required.';
-  if (exportScope && typeof exportScope !== 'string') return 'exportScope must be a string.';
+  if (exportScope && (typeof exportScope !== 'string' || !SUPPORTED_EXPORT_SCOPES.has(exportScope))) {
+    return 'exportScope must be one of: selected_views, model.';
+  }
 
   return null;
 }
 
-async function exportNwcAction(payload) {
+async function exportNwcAction(body) {
+  const payload = normalizePayload(body);
   const validationError = validatePayload(payload);
   if (validationError) {
     return {
@@ -34,47 +47,12 @@ async function exportNwcAction(payload) {
     };
   }
 
-  // TODO: Implement via add-in
-  return {
-    ok: false,
-    action: 'export_nwc',
-    source: 'bridge-queue',
-    error: {
-      code: 'NOT_IMPLEMENTED',
-      message: 'NWC export not yet implemented in Revit add-in.'
-    },
-    time: new Date().toISOString()
-  };
-
-  // Uncomment when implemented
-  /*
-  const jobId = `job-${randomUUID()}`;
-  const createdAt = new Date().toISOString();
-
-  const command = {
-    jobId,
-    tool: 'revit_export_nwc',
-    createdAt,
-    status: 'queued',
-    payload
-  };
-
-  await fs.mkdir(INBOX_DIR, { recursive: true });
-
-  const filePath = path.join(INBOX_DIR, `${jobId}.json`);
-  await fs.writeFile(filePath, JSON.stringify(command, null, 2), 'utf8');
+  const queued = await enqueueAddinCommand('revit_export_nwc', payload);
 
   return {
-    ok: true,
-    action: 'export_nwc',
-    queued: true,
-    jobId,
-    commandFile: filePath,
-    source: 'bridge-queue',
-    received: payload,
-    time: createdAt
+    ...queued,
+    action: 'export_nwc'
   };
-  */
 }
 
 module.exports = { exportNwcAction };

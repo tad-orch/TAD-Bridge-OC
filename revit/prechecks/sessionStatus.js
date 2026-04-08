@@ -1,4 +1,5 @@
 const { exec } = require('child_process');
+const { executeAddinCommandSync, getAddinHealth } = require('../addinQueue');
 
 function checkRevitRunning() {
   return new Promise((resolve) => {
@@ -57,11 +58,43 @@ async function getSessionStatus() {
   const revit = await checkRevitRunning();
   const version = revit.revitRunning ? await getRevitVersion() : null;
 
-  return {
+  const baseStatus = {
     revitInstalled: revit.revitInstalled,
     revitRunning: revit.revitRunning,
     revitVersion: version,
-    activeDocument: null // TODO: via add-in
+    detection: revit.detection,
+    activeDocument: null,
+    sessionSource: 'process-precheck'
+  };
+
+  if (!revit.revitRunning) {
+    return baseStatus;
+  }
+
+  const addinHealth = await getAddinHealth();
+
+  if (!addinHealth.available || !addinHealth.fresh) {
+    return baseStatus;
+  }
+
+  const addinResult = await executeAddinCommandSync('revit_session_status', {}, {
+    timeoutMs: Number(process.env.ADDIN_SESSION_STATUS_TIMEOUT_MS || 2500)
+  });
+
+  if (addinResult?.ok === true && addinResult.status === 'completed') {
+    return {
+      ...baseStatus,
+      revitRunning: addinResult.revitRunning ?? baseStatus.revitRunning,
+      revitVersion: addinResult.revitVersion ?? baseStatus.revitVersion,
+      activeDocument: addinResult.activeDocument ?? null,
+      sessionSource: 'revit-addin',
+      addinJobId: addinResult.jobId ?? null
+    };
+  }
+
+  return {
+    ...baseStatus,
+    addinError: addinResult?.error ?? null
   };
 }
 

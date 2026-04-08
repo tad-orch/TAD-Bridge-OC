@@ -81,7 +81,10 @@ async function launchRevit(preferredVersion, waitForReadySeconds = 60) {
       launchNeeded: false,
       launchSucceeded: true,
       revitRunning: true,
-      revitVersion: version
+      revitVersion: version,
+      requestedVersion: preferredVersion ?? null,
+      selectedVersion: version,
+      waitForReadySeconds
     };
   }
 
@@ -110,7 +113,10 @@ async function launchRevit(preferredVersion, waitForReadySeconds = 60) {
           launchNeeded: true,
           launchSucceeded: postLaunch.revitRunning,
           revitRunning: postLaunch.revitRunning,
-          revitVersion: postVersion
+          revitVersion: postVersion,
+          requestedVersion: preferredVersion ?? null,
+          selectedVersion: versionToLaunch,
+          waitForReadySeconds
         });
       }, (waitForReadySeconds * 1000) / 2);
     });

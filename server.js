@@ -1,6 +1,6 @@
+require('dotenv/config');
+
 const express = require('express');
-const { exec } = require('child_process');
-const fs = require('fs/promises');
 const path = require('path');
 
 const app = express();
@@ -9,15 +9,12 @@ const app = express();
 const PORT = Number(process.env.PORT || 4010);
 const HOST = process.env.HOST || '127.0.0.1';
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || 'change-this-now';
-const REVIT_BRIDGE_ROOT = 'D:\\TAD\\revit-bridge';
-const REVIT_INBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'inbox');
-const REVIT_OUTBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'outbox');
-const JSON_PARSE_PENDING = { __parse_pending__: true };
 
 const { createWallAction } = require('./revit/actions/createWall');
 const { openCloudModelAction } = require('./revit/actions/openCloudModel');
 const { list3DViewsAction } = require('./revit/actions/list3DViews');
 const { exportNwcAction } = require('./revit/actions/exportNwc');
+const { extractToolPayload, getBridgePaths, readJsonIfExists } = require('./revit/addinQueue');
 const { getSessionStatus, checkRevitRunning } = require('./revit/prechecks/sessionStatus');
 const { launchRevit } = require('./revit/prechecks/launchRevit');
 
@@ -90,34 +87,24 @@ function normalizeCreateWallPayload(body) {
   };
 }
 
-async function readJsonIfExists(filePath) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const content = await fs.readFile(filePath, 'utf8');
-      const normalized = content.replace(/^\uFEFF/, '').trim();
-
-      if (!normalized) {
-        return null;
-      }
-
-      return JSON.parse(normalized);
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        return null;
-      }
-
-      if (error instanceof SyntaxError) {
-        if (attempt < 2) {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          continue;
-        }
-
-        return JSON_PARSE_PENDING;
-      }
-
-      throw error;
-    }
+function sendToolResponse(res, toolName, result) {
+  if (result?.queued && result?.jobId) {
+    return res.json({
+      ok: true,
+      status: 'accepted',
+      jobId: result.jobId,
+      pollPath: `/jobs/${result.jobId}`,
+      tool: toolName,
+      machine: process.env.COMPUTERNAME || 'unknown',
+      ...result
+    });
   }
+
+  return res.json({
+    tool: toolName,
+    machine: process.env.COMPUTERNAME || 'unknown',
+    ...result
+  });
 }
 
 app.post('/tools/revit_ping', async (req, res) => {
@@ -125,6 +112,7 @@ app.post('/tools/revit_ping', async (req, res) => {
 
   return res.json({
     ok: true,
+    status: 'completed',
     tool: 'revit_ping',
     machine: process.env.COMPUTERNAME || 'unknown',
     revitInstalled: revit.revitInstalled,
@@ -141,6 +129,7 @@ app.post('/tools/revit_session_status', async (req, res) => {
 
   return res.json({
     ok: true,
+    status: 'completed',
     tool: 'revit_session_status',
     machine: process.env.COMPUTERNAME || 'unknown',
     ...status,
@@ -150,13 +139,15 @@ app.post('/tools/revit_session_status', async (req, res) => {
 });
 
 app.post('/tools/revit_launch', async (req, res) => {
-  const { preferredVersion, waitForReadySeconds = 60 } = req.body || {};
+  const payload = extractToolPayload(req.body ?? {});
+  const { preferredVersion, waitForReadySeconds = 60 } = payload;
 
   try {
     const result = await launchRevit(preferredVersion, waitForReadySeconds);
 
     return res.json({
       ok: true,
+      status: 'completed',
       tool: 'revit_launch',
       machine: process.env.COMPUTERNAME || 'unknown',
       ...result,
@@ -166,10 +157,13 @@ app.post('/tools/revit_launch', async (req, res) => {
   } catch (error) {
     return res.json({
       ok: false,
+      status: 'failed',
       tool: 'revit_launch',
       machine: process.env.COMPUTERNAME || 'unknown',
       launchNeeded: true,
       launchSucceeded: false,
+      requestedVersion: preferredVersion ?? null,
+      waitForReadySeconds,
       error: {
         code: 'LAUNCH_FAILED',
         message: error.message
@@ -183,98 +177,31 @@ app.post('/tools/revit_launch', async (req, res) => {
 app.post('/tools/revit_create_wall', async (req, res) => {
   const normalizedPayload = normalizeCreateWallPayload(req.body ?? {});
   const result = await createWallAction(normalizedPayload);
-
-  if (result?.ok && result?.jobId) {
-    return res.json({
-      ok: true,
-      status: 'accepted',
-      jobId: result.jobId,
-      pollPath: `/jobs/${result.jobId}`,
-      tool: 'revit_create_wall',
-      machine: process.env.COMPUTERNAME || 'unknown',
-      ...result
-    });
-  }
-
-  return res.json({
-    tool: 'revit_create_wall',
-    machine: process.env.COMPUTERNAME || 'unknown',
-    ...result
-  });
+  return sendToolResponse(res, 'revit_create_wall', result);
 });
 
 app.post('/tools/revit_open_cloud_model', async (req, res) => {
   const result = await openCloudModelAction(req.body ?? {});
-
-  if (result?.ok && result?.jobId) {
-    return res.json({
-      ok: true,
-      status: 'accepted',
-      jobId: result.jobId,
-      pollPath: `/jobs/${result.jobId}`,
-      tool: 'revit_open_cloud_model',
-      machine: process.env.COMPUTERNAME || 'unknown',
-      ...result
-    });
-  }
-
-  return res.json({
-    tool: 'revit_open_cloud_model',
-    machine: process.env.COMPUTERNAME || 'unknown',
-    ...result
-  });
+  return sendToolResponse(res, 'revit_open_cloud_model', result);
 });
 
 app.post('/tools/revit_list_3d_views', async (req, res) => {
   const result = await list3DViewsAction(req.body ?? {});
-
-  if (result?.ok && result?.jobId) {
-    return res.json({
-      ok: true,
-      status: 'accepted',
-      jobId: result.jobId,
-      pollPath: `/jobs/${result.jobId}`,
-      tool: 'revit_list_3d_views',
-      machine: process.env.COMPUTERNAME || 'unknown',
-      ...result
-    });
-  }
-
-  return res.json({
-    tool: 'revit_list_3d_views',
-    machine: process.env.COMPUTERNAME || 'unknown',
-    ...result
-  });
+  return sendToolResponse(res, 'revit_list_3d_views', result);
 });
 
 app.post('/tools/revit_export_nwc', async (req, res) => {
   const result = await exportNwcAction(req.body ?? {});
-
-  if (result?.ok && result?.jobId) {
-    return res.json({
-      ok: true,
-      status: 'accepted',
-      jobId: result.jobId,
-      pollPath: `/jobs/${result.jobId}`,
-      tool: 'revit_export_nwc',
-      machine: process.env.COMPUTERNAME || 'unknown',
-      ...result
-    });
-  }
-
-  return res.json({
-    tool: 'revit_export_nwc',
-    machine: process.env.COMPUTERNAME || 'unknown',
-    ...result
-  });
+  return sendToolResponse(res, 'revit_export_nwc', result);
 });
 
 app.get('/jobs/:jobId', async (req, res, next) => {
   try {
     const { jobId } = req.params;
-    const inboxFile = path.join(REVIT_INBOX_DIR, `${jobId}.json`);
-    const receivedFile = path.join(REVIT_OUTBOX_DIR, `${jobId}.received.json`);
-    const resultFile = path.join(REVIT_OUTBOX_DIR, `${jobId}.result.json`);
+    const { inboxDir, outboxDir } = getBridgePaths();
+    const inboxFile = path.join(inboxDir, `${jobId}.json`);
+    const receivedFile = path.join(outboxDir, `${jobId}.received.json`);
+    const resultFile = path.join(outboxDir, `${jobId}.result.json`);
 
     const result = await readJsonIfExists(resultFile);
     if (result) {

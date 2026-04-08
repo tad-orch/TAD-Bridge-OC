@@ -1,23 +1,36 @@
-const fs = require('fs/promises');
-const path = require('path');
-const { randomUUID } = require('crypto');
+const { executeAddinCommandSync, extractToolPayload } = require('../addinQueue');
 
-const REVIT_BRIDGE_ROOT = 'D:\\TAD\\revit-bridge';
-const INBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'inbox');
+function normalizePayload(body) {
+  const incoming = extractToolPayload(body);
+
+  return {
+    onlyExportable: incoming.onlyExportable !== undefined ? incoming.onlyExportable : true,
+    excludeTemplates:
+      incoming.excludeTemplates !== undefined
+        ? incoming.excludeTemplates
+        : incoming.onlyExportable !== undefined
+          ? incoming.onlyExportable
+          : true
+  };
+}
 
 function validatePayload(payload) {
   if (!payload || typeof payload !== 'object') {
     return 'Payload is required.';
   }
 
-  const { onlyExportable } = payload;
+  const { onlyExportable, excludeTemplates } = payload;
 
   if (onlyExportable !== undefined && typeof onlyExportable !== 'boolean') return 'onlyExportable must be a boolean.';
+  if (excludeTemplates !== undefined && typeof excludeTemplates !== 'boolean') {
+    return 'excludeTemplates must be a boolean.';
+  }
 
   return null;
 }
 
-async function list3DViewsAction(payload) {
+async function list3DViewsAction(body) {
+  const payload = normalizePayload(body);
   const validationError = validatePayload(payload);
   if (validationError) {
     return {
@@ -32,47 +45,12 @@ async function list3DViewsAction(payload) {
     };
   }
 
-  // TODO: Implement via add-in
-  return {
-    ok: false,
-    action: 'list_3d_views',
-    source: 'bridge-queue',
-    error: {
-      code: 'NOT_IMPLEMENTED',
-      message: 'Listing 3D views not yet implemented in Revit add-in.'
-    },
-    time: new Date().toISOString()
-  };
-
-  // Uncomment when implemented
-  /*
-  const jobId = `job-${randomUUID()}`;
-  const createdAt = new Date().toISOString();
-
-  const command = {
-    jobId,
-    tool: 'revit_list_3d_views',
-    createdAt,
-    status: 'queued',
-    payload
-  };
-
-  await fs.mkdir(INBOX_DIR, { recursive: true });
-
-  const filePath = path.join(INBOX_DIR, `${jobId}.json`);
-  await fs.writeFile(filePath, JSON.stringify(command, null, 2), 'utf8');
+  const result = await executeAddinCommandSync('revit_list_3d_views', payload);
 
   return {
-    ok: true,
-    action: 'list_3d_views',
-    queued: true,
-    jobId,
-    commandFile: filePath,
-    source: 'bridge-queue',
-    received: payload,
-    time: createdAt
+    ...result,
+    action: 'list_3d_views'
   };
-  */
 }
 
 module.exports = { list3DViewsAction };
