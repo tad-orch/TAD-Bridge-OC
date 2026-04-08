@@ -15,6 +15,11 @@ const REVIT_OUTBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'outbox');
 const JSON_PARSE_PENDING = { __parse_pending__: true };
 
 const { createWallAction } = require('./revit/actions/createWall');
+const { openCloudModelAction } = require('./revit/actions/openCloudModel');
+const { list3DViewsAction } = require('./revit/actions/list3DViews');
+const { exportNwcAction } = require('./revit/actions/exportNwc');
+const { getSessionStatus, checkRevitRunning } = require('./revit/prechecks/sessionStatus');
+const { launchRevit } = require('./revit/prechecks/launchRevit');
 
 // Middleware
 app.use(express.json({ limit: '256kb' }));
@@ -64,33 +69,6 @@ app.post('/tools/get_acc_auth_status', (req, res) => {
     received: req.body ?? {}
   });
 });
-
-function checkRevitRunning() {
-  return new Promise((resolve) => {
-    exec('tasklist /FI "IMAGENAME eq Revit.exe" /FO CSV /NH', (error, stdout) => {
-      if (error) {
-        return resolve({
-          revitInstalled: null,
-          revitRunning: false,
-          detection: 'tasklist-error'
-        });
-      }
-
-      const output = (stdout || '').trim();
-
-      const isRunning =
-        output.length > 0 &&
-        !output.includes('INFO: No tasks are running') &&
-        output.toLowerCase().includes('revit.exe');
-
-      resolve({
-        revitInstalled: true,
-        revitRunning: isRunning,
-        detection: 'tasklist'
-      });
-    });
-  });
-}
 
 function getCreateWallIncomingPayload(body) {
   if (body?.args && typeof body.args === 'object' && !Array.isArray(body.args)) {
@@ -158,6 +136,50 @@ app.post('/tools/revit_ping', async (req, res) => {
   });
 });
 
+app.post('/tools/revit_session_status', async (req, res) => {
+  const status = await getSessionStatus();
+
+  return res.json({
+    ok: true,
+    tool: 'revit_session_status',
+    machine: process.env.COMPUTERNAME || 'unknown',
+    ...status,
+    source: 'bridge-live',
+    time: new Date().toISOString()
+  });
+});
+
+app.post('/tools/revit_launch', async (req, res) => {
+  const { preferredVersion, waitForReadySeconds = 60 } = req.body || {};
+
+  try {
+    const result = await launchRevit(preferredVersion, waitForReadySeconds);
+
+    return res.json({
+      ok: true,
+      tool: 'revit_launch',
+      machine: process.env.COMPUTERNAME || 'unknown',
+      ...result,
+      source: 'bridge-live',
+      time: new Date().toISOString()
+    });
+  } catch (error) {
+    return res.json({
+      ok: false,
+      tool: 'revit_launch',
+      machine: process.env.COMPUTERNAME || 'unknown',
+      launchNeeded: true,
+      launchSucceeded: false,
+      error: {
+        code: 'LAUNCH_FAILED',
+        message: error.message
+      },
+      source: 'bridge-live',
+      time: new Date().toISOString()
+    });
+  }
+});
+
 app.post('/tools/revit_create_wall', async (req, res) => {
   const normalizedPayload = normalizeCreateWallPayload(req.body ?? {});
   const result = await createWallAction(normalizedPayload);
@@ -176,6 +198,72 @@ app.post('/tools/revit_create_wall', async (req, res) => {
 
   return res.json({
     tool: 'revit_create_wall',
+    machine: process.env.COMPUTERNAME || 'unknown',
+    ...result
+  });
+});
+
+app.post('/tools/revit_open_cloud_model', async (req, res) => {
+  const result = await openCloudModelAction(req.body ?? {});
+
+  if (result?.ok && result?.jobId) {
+    return res.json({
+      ok: true,
+      status: 'accepted',
+      jobId: result.jobId,
+      pollPath: `/jobs/${result.jobId}`,
+      tool: 'revit_open_cloud_model',
+      machine: process.env.COMPUTERNAME || 'unknown',
+      ...result
+    });
+  }
+
+  return res.json({
+    tool: 'revit_open_cloud_model',
+    machine: process.env.COMPUTERNAME || 'unknown',
+    ...result
+  });
+});
+
+app.post('/tools/revit_list_3d_views', async (req, res) => {
+  const result = await list3DViewsAction(req.body ?? {});
+
+  if (result?.ok && result?.jobId) {
+    return res.json({
+      ok: true,
+      status: 'accepted',
+      jobId: result.jobId,
+      pollPath: `/jobs/${result.jobId}`,
+      tool: 'revit_list_3d_views',
+      machine: process.env.COMPUTERNAME || 'unknown',
+      ...result
+    });
+  }
+
+  return res.json({
+    tool: 'revit_list_3d_views',
+    machine: process.env.COMPUTERNAME || 'unknown',
+    ...result
+  });
+});
+
+app.post('/tools/revit_export_nwc', async (req, res) => {
+  const result = await exportNwcAction(req.body ?? {});
+
+  if (result?.ok && result?.jobId) {
+    return res.json({
+      ok: true,
+      status: 'accepted',
+      jobId: result.jobId,
+      pollPath: `/jobs/${result.jobId}`,
+      tool: 'revit_export_nwc',
+      machine: process.env.COMPUTERNAME || 'unknown',
+      ...result
+    });
+  }
+
+  return res.json({
+    tool: 'revit_export_nwc',
     machine: process.env.COMPUTERNAME || 'unknown',
     ...result
   });
