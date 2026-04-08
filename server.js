@@ -1,5 +1,7 @@
 const express = require('express');
 const { exec } = require('child_process');
+const fs = require('fs/promises');
+const path = require('path');
 
 const app = express();
 
@@ -7,6 +9,10 @@ const app = express();
 const PORT = Number(process.env.PORT || 4010);
 const HOST = process.env.HOST || '127.0.0.1';
 const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN || 'change-this-now';
+const REVIT_BRIDGE_ROOT = 'D:\\TAD\\revit-bridge';
+const REVIT_INBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'inbox');
+const REVIT_OUTBOX_DIR = path.join(REVIT_BRIDGE_ROOT, 'outbox');
+const JSON_PARSE_PENDING = { __parse_pending__: true };
 
 const { createWallAction } = require('./revit/actions/createWall');
 
@@ -86,6 +92,56 @@ function checkRevitRunning() {
   });
 }
 
+function getCreateWallIncomingPayload(body) {
+  if (body?.args && typeof body.args === 'object' && !Array.isArray(body.args)) {
+    return body.args;
+  }
+
+  return body ?? {};
+}
+
+function normalizeCreateWallPayload(body) {
+  const incoming = getCreateWallIncomingPayload(body);
+
+  return {
+    start: incoming.start,
+    end: incoming.end,
+    height: incoming.height ?? incoming.unconnectedHeight,
+    level: incoming.level ?? incoming.levelName,
+    wallType: incoming.wallType
+  };
+}
+
+async function readJsonIfExists(filePath) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      const normalized = content.replace(/^\uFEFF/, '').trim();
+
+      if (!normalized) {
+        return null;
+      }
+
+      return JSON.parse(normalized);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return null;
+      }
+
+      if (error instanceof SyntaxError) {
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          continue;
+        }
+
+        return JSON_PARSE_PENDING;
+      }
+
+      throw error;
+    }
+  }
+}
+
 app.post('/tools/revit_ping', async (req, res) => {
   const revit = await checkRevitRunning();
 
@@ -103,13 +159,112 @@ app.post('/tools/revit_ping', async (req, res) => {
 });
 
 app.post('/tools/revit_create_wall', async (req, res) => {
-  const result = await createWallAction(req.body ?? {});
+  const normalizedPayload = normalizeCreateWallPayload(req.body ?? {});
+  const result = await createWallAction(normalizedPayload);
+
+  if (result?.ok && result?.jobId) {
+    return res.json({
+      ok: true,
+      status: 'accepted',
+      jobId: result.jobId,
+      pollPath: `/jobs/${result.jobId}`,
+      tool: 'revit_create_wall',
+      machine: process.env.COMPUTERNAME || 'unknown',
+      ...result
+    });
+  }
+
   return res.json({
-    ok: true,
     tool: 'revit_create_wall',
     machine: process.env.COMPUTERNAME || 'unknown',
     ...result
   });
+});
+
+app.get('/jobs/:jobId', async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const inboxFile = path.join(REVIT_INBOX_DIR, `${jobId}.json`);
+    const receivedFile = path.join(REVIT_OUTBOX_DIR, `${jobId}.received.json`);
+    const resultFile = path.join(REVIT_OUTBOX_DIR, `${jobId}.result.json`);
+
+    const result = await readJsonIfExists(resultFile);
+    if (result) {
+      if (result.__parse_pending__) {
+        return res.json({
+          ok: true,
+          status: 'running',
+          jobId
+        });
+      }
+
+      if (result.ok === false || result.status === 'failed') {
+        const error =
+          result.error && typeof result.error === 'object'
+            ? result.error
+            : { message: result.error || 'Revit job failed.' };
+
+        return res.json({
+          ok: false,
+          status: 'failed',
+          jobId,
+          error
+        });
+      }
+
+      return res.json({
+        ok: true,
+        status: 'completed',
+        jobId,
+        result
+      });
+    }
+
+    const received = await readJsonIfExists(receivedFile);
+    if (received) {
+      if (received.__parse_pending__) {
+        return res.json({
+          ok: true,
+          status: 'running',
+          jobId
+        });
+      }
+
+      return res.json({
+        ok: true,
+        status: 'running',
+        jobId
+      });
+    }
+
+    const queued = await readJsonIfExists(inboxFile);
+    if (queued) {
+      if (queued.__parse_pending__) {
+        return res.json({
+          ok: true,
+          status: 'accepted',
+          jobId
+        });
+      }
+
+      return res.json({
+        ok: true,
+        status: 'accepted',
+        jobId
+      });
+    }
+
+    return res.status(404).json({
+      ok: false,
+      status: 'failed',
+      error: {
+        code: 'JOB_NOT_FOUND',
+        message: `Job ${jobId} was not found.`
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Protected tool
