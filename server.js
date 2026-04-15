@@ -14,6 +14,7 @@ const { createWallAction } = require('./revit/actions/createWall');
 const { openCloudModelAction } = require('./revit/actions/openCloudModel');
 const { list3DViewsAction } = require('./revit/actions/list3DViews');
 const { exportNwcAction } = require('./revit/actions/exportNwc');
+const { activateDocumentAction } = require('./revit/actions/activateDocument');
 const { extractToolPayload, getBridgePaths, readJsonIfExists } = require('./revit/addinQueue');
 const { getSessionStatus, checkRevitRunning } = require('./revit/prechecks/sessionStatus');
 const { launchRevit } = require('./revit/prechecks/launchRevit');
@@ -193,6 +194,11 @@ app.post('/tools/revit_list_3d_views', async (req, res) => {
 app.post('/tools/revit_export_nwc', async (req, res) => {
   const result = await exportNwcAction(req.body ?? {});
   return sendToolResponse(res, 'revit_export_nwc', result);
+});
+
+app.post('/tools/revit_activate_document', async (req, res) => {
+  const result = await activateDocumentAction(req.body ?? {});
+  return sendToolResponse(res, 'revit_activate_document', result);
 });
 
 app.get('/jobs/:jobId', async (req, res, next) => {
